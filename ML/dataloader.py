@@ -10,7 +10,7 @@ class ParticleJetDataset(Dataset):
     def __init__(self, root_file, reduce_ds=0):
         self.tree = uproot.open(root_file)["tree"]
 
-        reduce_ds = 1
+        # reduce_ds = 1
         # Get number of events
         self.nevents = self.tree.num_entries
         if reduce_ds == 0:
@@ -39,6 +39,9 @@ class ParticleJetDataset(Dataset):
             self.full_data_array[var] = self.tree[var].array(
                 library="np", entry_stop=self.nevents
             )
+
+        # Pad tracks
+        self.pad_tracks()
 
         # Building tracks' origins
         origins = []
@@ -113,8 +116,33 @@ class ParticleJetDataset(Dataset):
     def __len__(self):
         return self.nevents
 
+    def pad_tracks(self):
+        max_tracks = max(
+            len(self.full_data_array["part_eta"][i]) for i in range(self.nevents)
+        )
+        print(f"Padding all events to {max_tracks} tracks.")
+        for key in self.particle_variables + self.particle_labels:
+            padded_array = []
+            for i in range(self.nevents):
+                current_array = self.full_data_array[key][i]
+                pad_size = max_tracks - len(current_array)
+                if pad_size > 0:
+                    if isinstance(current_array[0], np.ndarray):
+                        pad_shape = (pad_size,) + current_array[0].shape
+                        padding = np.zeros(pad_shape)
+                    else:
+                        padding = np.zeros(pad_size)
+                    padded_array.append(np.concatenate([current_array, padding], axis=0))
+                else:
+                    padded_array.append(current_array)
+            
+            self.full_data_array[key] = np.array(padded_array)
+
     def __normalize_full_data__(self):
         for key in self.particle_variables + self.jet_variables:
+            if key in ["part_pid", "part_origin", "part_versor", "best_chi2"]:
+                continue
+
             if isinstance(self.full_data_array[key], np.ndarray):
                 self.full_data_array[key] = (
                     self.full_data_array[key] - np.mean(self.full_data_array[key])

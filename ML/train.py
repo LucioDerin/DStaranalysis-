@@ -9,7 +9,7 @@ from vertexing import fit
 
 # Load Dataset and Dataloader
 root_file = "../data/test.root"  # Change this to your actual ROOT file
-dataset = ParticleJetDataset(root_file)
+dataset = ParticleJetDataset(root_file, reduce_ds=10)
 dataloader = DataLoader(dataset, batch_size=100, shuffle=True, collate_fn=lambda x: list(zip(*x)))
 
 # Initialize Model, Loss, and Optimizer
@@ -77,3 +77,5 @@ for epoch in range(num_epochs):
 
 print("Training complete!")
 
+# Save the trained model
+torch.save(model.state_dict(), "ckpts/particle_jet_classifier.pth")

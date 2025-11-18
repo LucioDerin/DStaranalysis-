@@ -30,7 +30,7 @@ def chi2(origins, versors, weights, fitted_vertex):
 
     # Computation of the previous formula
     ov = origins - fitted_vertex
-    chi2 = torch.cross(ov, versors)
+    chi2 = torch.linalg.cross(ov, versors)
     chi2_norm = torch.linalg.norm(chi2, axis=1) ** 2
     # Multiplication by the probability of the track to be from the fitted vertex
     chi2_weighted = weights * chi2_norm
