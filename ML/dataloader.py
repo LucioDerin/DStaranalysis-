@@ -7,7 +7,7 @@ from vertexing import fit
 
 
 class ParticleJetDataset(Dataset):
-    def __init__(self, root_file, reduce_ds=0):
+    def __init__(self, root_file, reduce_ds=0, evaluation=False):
         self.tree = uproot.open(root_file)["tree"]
 
         # reduce_ds = 1
@@ -73,26 +73,32 @@ class ParticleJetDataset(Dataset):
             versors.append(versors_jet)
         self.full_data_array["part_versor"] = np.array(versors)
 
-        # Best chi2
-        best_chi2s = []
-        fit_iter = 100
-        for o, a, label in zip(
-            self.full_data_array["part_origin"],
-            self.full_data_array["part_versor"],
-            self.full_data_array["part_isFromD"],
-        ):
-            fit_o = torch.tensor(o[label == 1]).float()
-            fit_a = torch.tensor(a[label == 1]).float()
-
-            chi2, _ = fit(fit_o, fit_a, None, fit_iter)
-            best_chi2s.append(chi2.item())
-        self.full_data_array["best_chi2"] = np.array(best_chi2s)
-
         # Load jet-level data
         for var in self.jet_variables:
             self.full_data_array[var] = self.tree[var].array(
                 library="np", entry_stop=self.nevents
             )
+
+        # Best chi2
+        if evaluation:
+            self.full_data_array["best_chi2"] = np.zeros_like(
+                self.full_data_array["jet_energy"]
+            )
+        else:
+            best_chi2s = []
+            fit_iter = 100
+            for o, a, label in zip(
+                self.full_data_array["part_origin"],
+                self.full_data_array["part_versor"],
+                self.full_data_array["part_isFromD"],
+            ):
+                fit_o = torch.tensor(o[label == 1]).float()
+                fit_a = torch.tensor(a[label == 1]).float()
+
+                chi2, _ = fit(fit_o, fit_a, None, fit_iter)
+                best_chi2s.append(chi2.item())
+            self.full_data_array["best_chi2"] = np.array(best_chi2s)
+
 
         # Convert uproot output to correct format
         for key in self.full_data_array.keys():

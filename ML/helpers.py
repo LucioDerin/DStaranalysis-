@@ -11,28 +11,39 @@ def model_from_ckpt(ckpt_path):
     return model
 
 def add_eval_to_file(input_root, ckpt_path, output_root=None, reduce_ds=0):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
     # Load model
     model = model_from_ckpt(ckpt_path)
+    model = model.to(device)
 
     # Load dataset
-    dataset = ParticleJetDataset(input_root, reduce_ds=reduce_ds)
+    dataset = ParticleJetDataset(input_root, reduce_ds=reduce_ds, evaluation=True)
+    eval_dataloader = torch.utils.data.DataLoader(dataset, batch_size=5000, shuffle=False, collate_fn=lambda x: list(zip(*x)))
 
     # Prepare to store results
     part_output = []
     jet_output = []
 
     # Evaluate model on dataset
-    for i in range(len(dataset)):
-        data = dataset[i][0].unsqueeze(0)  # Add batch dimension
+    for i,batch in enumerate(eval_dataloader):
+        part_features, labels_particle, labels_jet, part_origins, part_versors, best_chi2s = batch
+        part_features = [p.to(device) for p in part_features]
+
+        if i%5==0:
+            print(f"Evaluating batch {i}/{len(eval_dataloader)}")
         with torch.no_grad():
-            output_part, output_jet = model(data)
-            output_part = output_part.squeeze(0)  # Remove batch dimension
-            output_jet = output_jet.squeeze(0)
-            part_output.append(output_part.numpy())
-            jet_output.append(output_jet.numpy())
+            for particles in part_features:
+                particles = particles.unsqueeze(0)  # Add batch dimension
+                output_part, output_jet = model(particles)
+                output_part = output_part.squeeze(0)  # Remove batch dimension
+                output_jet = output_jet.squeeze(0)
+                part_output.append(output_part.cpu().numpy())
+                jet_output.append(output_jet.cpu().numpy())
 
     part_output = np.array(part_output, dtype=np.float32)
-    jet_output = np.array(jet_output, dtype=np.float32).flatten()
+    jet_output = np.array(jet_output, dtype=np.float32)
     
     # Save results to new ROOT file
     with uproot.recreate(output_root) as ofile:
@@ -47,8 +58,8 @@ def add_eval_to_file(input_root, ckpt_path, output_root=None, reduce_ds=0):
 if __name__ == "__main__":
     
     ckpt_path = "ckpts/particle_jet_classifier.pth"
-    input_root = "../data/test.root"
+    input_root = "../data/data_py_top/output_Dijetcc_smeared_18164619.root"
     output_root = "../data/particle_jet_output.root"
 
-    add_eval_to_file(input_root, ckpt_path, output_root=output_root, reduce_ds=10)
+    add_eval_to_file(input_root, ckpt_path, output_root=output_root, reduce_ds=0)
     print(f"Model evaluation completed. Results saved to {output_root}")
