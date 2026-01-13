@@ -3,6 +3,7 @@ import uproot
 from model import ParticleJetClassifier
 from dataloader import ParticleJetDataset
 import numpy as np
+import shutil
 
 def model_from_ckpt(ckpt_path):
     model = ParticleJetClassifier()
@@ -45,13 +46,9 @@ def add_eval_to_file(input_root, ckpt_path, output_root=None, reduce_ds=0):
     part_output = np.array(part_output, dtype=np.float32)
     jet_output = np.array(jet_output, dtype=np.float32)
     
+    shutil.copy(input_root, output_root)
     # Save results to new ROOT file
-    with uproot.recreate(output_root) as ofile:
-        with uproot.open(input_root) as ifile:
-            tree = ifile["tree"]
-            num_events = int(reduce_ds) if reduce_ds >0 else tree.num_entries
-
-            ofile.mktree("tree", {key: tree[key].array(library="np", entry_stop=num_events)[:reduce_ds] for key in tree.keys()})
+    with uproot.update(output_root) as ofile:
         ofile.mktree("model_predictions", {"jet_output": jet_output,
                                            "part_output": part_output})
 
