@@ -7,12 +7,13 @@ from dataloader import ParticleJetDataset  # Import dataset
 from model import ParticleJetClassifier  # Import model
 
 # Load Dataset and Dataloader
-root_file = "test.root"  # Change this to your actual ROOT file
-dataset = ParticleJetDataset(root_file)
+root_file = "../data/test.root"  # Change this to your actual ROOT file
+dataset = ParticleJetDataset(root_file, reduce_ds=-1)
 dataloader = DataLoader(dataset, batch_size=100, shuffle=True, collate_fn=lambda x: list(zip(*x)))
 
 # Initialize Model, Loss, and Optimizer
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 model = ParticleJetClassifier().to(device)
 criterion_particle = nn.CrossEntropyLoss()
 criterion_jet = nn.BCELoss()
@@ -26,14 +27,14 @@ optimizer = torch.optim.Adam(model.parameters(), lr=initial_lr)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
 
 # Training Loop
-num_epochs = 50
+num_epochs = 100
 for epoch in range(num_epochs):
     total_loss = 0
     model.train()
 
-    for batch_idx, batch in enumerate(dataloader):  # Add index `batch_idx`
-        if batch_idx > 0:  # Stop after processing the first event
-            break  
+    # for batch_idx, batch in enumerate(dataloader):  # Add index `batch_idx`
+    #     if batch_idx > 0:  # Stop after processing the first event
+    #         break  
 
     for batch in dataloader:
         part_features, labels_particle, labels_jet = batch
@@ -61,9 +62,11 @@ for epoch in range(num_epochs):
 
         total_loss += batch_loss.item()
         # **Update Learning Rate Based on Validation Loss**
-        #scheduler.step(total_loss)
+        scheduler.step(total_loss)
 
     print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss:.4f}")
 
 print("Training complete!")
 
+# Save the trained model
+torch.save(model.state_dict(), "ckpts/particle_jet_classifier_no_vtx.pth")
