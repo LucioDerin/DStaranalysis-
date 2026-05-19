@@ -3,3 +3,5 @@ data
 **/__pycache__/
 notes.md
 ckpts/
+ML/helpers_old.py
+ML/train_old.py
