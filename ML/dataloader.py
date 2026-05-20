@@ -3,6 +3,8 @@ from torch.utils.data import Dataset
 import uproot
 import numpy as np
 
+from vertexing import fit
+
 class ParticleJetDataset(Dataset):
     def __init__(self, root_files, reduce_ds=0, Nfeatures = 10, evaluation = False, npad = None):
         
@@ -71,13 +73,54 @@ class ParticleJetDataset(Dataset):
                 for var in self.jet_variables:
                     new_data = self.tree[var].array(library="np", entry_stop=self.nevents)
                     self.full_data_array[var] = np.concatenate((self.full_data_array[var], new_data), axis=0)
+        
+        # Building tracks' origins
+        origins = []
+        for phi_jet, d0_jet, z0_jet in zip(
+            self.full_data_array["part_phi"],
+            self.full_data_array["part_d0val"],
+            self.full_data_array["part_dzval"],
+        ):
+            origins_jet = []
+            for phi, d0, z0 in zip(phi_jet, d0_jet, z0_jet):
+                y0 = abs(d0) * np.sin(phi)
+                x0 = abs(d0) * np.cos(phi)
+                origins_jet.append([x0, y0, z0])
+            origins.append(origins_jet)
+        self.full_data_array["part_origin"] = np.array(origins)
 
-        # Convert uproot output to correct format
-        # for key in self.full_data_array.keys():
-        #     if isinstance(self.full_data_array[key], dict):
-        #         self.full_data_array[key] = list(self.full_data_array[key].values())
-        #     else:
-        #         self.full_data_array[key] = np.array(self.full_data_array[key])
+        # Building tracks' versors
+        versors = []
+        for eta_jet, phi_jet in zip(
+            self.full_data_array["part_eta"], self.full_data_array["part_phi"]
+        ):
+            versors_jet = []
+            for eta, phi in zip(eta_jet, phi_jet):
+                theta = 2 * np.arctan(np.exp(-eta))
+                ax = np.sin(theta) * np.cos(phi)
+                ay = np.sin(theta) * np.sin(phi)
+                az = np.cos(theta)
+                versors_jet.append([ax, ay, az])
+            versors.append(versors_jet)
+        self.full_data_array["part_versor"] = np.array(versors)
+
+        # Best chi2
+        best_chi2s = []
+        fitted_vtxs = []
+        fit_iter = 100
+        for o, a, label in zip(
+            self.full_data_array["part_origin"],
+            self.full_data_array["part_versor"],
+            self.full_data_array["part_isFromD"],
+        ):
+            fit_o = torch.tensor(o[label == 1]).float()
+            fit_a = torch.tensor(a[label == 1]).float()
+
+            chi2, fv = fit(fit_o, fit_a, None, fit_iter)
+            best_chi2s.append(chi2.item())
+            fitted_vtxs.append(fv.item())
+        self.full_data_array["best_chi2"] = np.array(best_chi2s)
+        self.full_data_array["fitted_vtx"] = np.array(fitted_vtxs)
 
         # Pad tracks
         self.__pad_tracks()
@@ -200,9 +243,14 @@ class ParticleJetDataset(Dataset):
         # Extract jet-level label
         label_jet = self.jet_isCJet[idx]
 
-        return (torch.tensor(part_features, dtype=torch.float32),
-                torch.tensor(labels_particle, dtype=torch.long),
-                torch.tensor(label_jet, dtype=torch.float32))
+        return (
+            torch.tensor(part_features, dtype=torch.float32),
+            torch.tensor(labels_particle, dtype=torch.float32),
+            torch.tensor(label_jet, dtype=torch.float32),
+            torch.tensor(self.full_data_array["part_origin"][idx], dtype=torch.float32),
+            torch.tensor(self.full_data_array["part_versor"][idx], dtype=torch.float32),
+            torch.tensor(self.full_data_array["fitted_vtx"][idx], dtype=torch.float32),
+        )
     
     def get_particles_loss_class_weights(self):
         all_labels_fromD = self.full_data_array["part_isFromD"].flatten()
