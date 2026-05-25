@@ -6,8 +6,8 @@ import numpy as np
 from vertexing import fit
 
 class ParticleJetDataset(Dataset):
-    def __init__(self, root_files, reduce_ds=0, Nfeatures = 10, evaluation = False, npad = None):
-        
+    def __init__(self, root_files, reduce_ds=0, Nfeatures = 10, evaluation = False, npad = None, fit_iter = 100):
+
         # Define Variables
         self.particle_variables = [
             "part_charge",
@@ -29,6 +29,7 @@ class ParticleJetDataset(Dataset):
         self.Nfeatures = Nfeatures
         self.evaluation = evaluation
         self.npad = npad
+        self.fit_iter = fit_iter
 
         self.read_events = 0
         
@@ -39,7 +40,6 @@ class ParticleJetDataset(Dataset):
             root_files = [root_files]
 
         for i, root_file in enumerate(root_files):
-
 
             self.tree = uproot.open(root_file)["tree"]
             # Get number of events
@@ -73,8 +73,8 @@ class ParticleJetDataset(Dataset):
                 for var in self.jet_variables:
                     new_data = self.tree[var].array(library="np", entry_stop=self.nevents)
                     self.full_data_array[var] = np.concatenate((self.full_data_array[var], new_data), axis=0)
-        
-        # Building tracks' origins
+
+        # Building tracks' origins (ragged, before padding)
         origins = []
         for phi_jet, d0_jet, z0_jet in zip(
             self.full_data_array["part_phi"],
@@ -87,9 +87,9 @@ class ParticleJetDataset(Dataset):
                 x0 = abs(d0) * np.cos(phi)
                 origins_jet.append([x0, y0, z0])
             origins.append(origins_jet)
-        self.full_data_array["part_origin"] = np.array(origins)
+        self.full_data_array["part_origin"] = np.array(origins, dtype=object)  # ragged
 
-        # Building tracks' versors
+        # Building tracks' versors (ragged, before padding)
         versors = []
         for eta_jet, phi_jet in zip(
             self.full_data_array["part_eta"], self.full_data_array["part_phi"]
@@ -102,27 +102,29 @@ class ParticleJetDataset(Dataset):
                 az = np.cos(theta)
                 versors_jet.append([ax, ay, az])
             versors.append(versors_jet)
-        self.full_data_array["part_versor"] = np.array(versors)
+        self.full_data_array["part_versor"] = np.array(versors, dtype=object)  # ragged
 
-        # Best chi2
+        # Best chi2 — computed before padding, on true vertex-associated tracks only
         best_chi2s = []
         fitted_vtxs = []
-        fit_iter = 100
         for o, a, label in zip(
             self.full_data_array["part_origin"],
             self.full_data_array["part_versor"],
             self.full_data_array["part_isFromD"],
         ):
-            fit_o = torch.tensor(o[label == 1]).float()
-            fit_a = torch.tensor(a[label == 1]).float()
+            o_arr = np.array(o)   # [n, 3]
+            a_arr = np.array(a)   # [n, 3]
+            fit_o = torch.tensor(o_arr[label == 1]).float()
+            fit_a = torch.tensor(a_arr[label == 1]).float()
 
-            chi2, fv = fit(fit_o, fit_a, None, fit_iter)
-            best_chi2s.append(chi2.item())
-            fitted_vtxs.append(fv.item())
-        self.full_data_array["best_chi2"] = np.array(best_chi2s)
-        self.full_data_array["fitted_vtx"] = np.array(fitted_vtxs)
+            best_chi2, fv = fit(fit_o, fit_a, None, self.fit_iter)
+            best_chi2s.append(best_chi2.item())
+            fitted_vtxs.append(fv.detach().numpy())  # [3]
 
-        # Pad tracks
+        self.full_data_array["best_chi2"] = np.array(best_chi2s, dtype=np.float32)   # [nevents]
+        self.full_data_array["fitted_vtx"] = np.array(fitted_vtxs, dtype=np.float32) # [nevents, 3]
+
+        # Pad tracks (including origins and versors)
         self.__pad_tracks()
 
         # Normalize data
@@ -145,6 +147,7 @@ class ParticleJetDataset(Dataset):
             )
 
         print(f"Padding all events to {self.npad} tracks.")
+
         for key in self.particle_variables:
             padded_array = []
             for i in range(len(self.full_data_array["jet_energy"])):
@@ -158,9 +161,8 @@ class ParticleJetDataset(Dataset):
                         padding = np.zeros(pad_size)
                     padded_array.append(np.concatenate([current_array, padding], axis=0))
                 else:
-                    padded_array.append(current_array)
-            
-            self.full_data_array[key] = np.array(padded_array)
+                    padded_array.append(current_array[:self.npad])
+            self.full_data_array[key] = np.array(padded_array, dtype=np.float32)
 
         for key in self.particle_labels:
             padded_array = []
@@ -171,9 +173,17 @@ class ParticleJetDataset(Dataset):
                     padding = -1 * np.ones(pad_size)  # Use -1 for padding labels
                     padded_array.append(np.concatenate([current_array, padding], axis=0))
                 else:
-                    padded_array.append(current_array)
-            
-            self.full_data_array[key] = np.array(padded_array)
+                    padded_array.append(current_array[:self.npad])
+            self.full_data_array[key] = np.array(padded_array, dtype=np.float32)
+
+        # Pad origins and versors to [nevents, npad, 3]
+        for key in ["part_origin", "part_versor"]:
+            padded_array = np.zeros((len(self.full_data_array[key]), self.npad, 3), dtype=np.float32)
+            for i, jet in enumerate(self.full_data_array[key]):
+                jet_arr = np.array(jet, dtype=np.float32)  # [n, 3]
+                n = min(len(jet_arr), self.npad)
+                padded_array[i, :n, :] = jet_arr[:n, :]
+            self.full_data_array[key] = padded_array  # [nevents, npad, 3]
 
     def __normalize_full_data__(self):
     
@@ -194,8 +204,6 @@ class ParticleJetDataset(Dataset):
         for key in self.particle_variables:
             self.full_data_array[key][particle_mask == False] = 0.0
 
-            
-    
         # Jet-level variables (1D: events)
         for key in self.jet_variables:
             arr = self.full_data_array[key]
@@ -215,19 +223,14 @@ class ParticleJetDataset(Dataset):
             self.full_data_array["part_d0err"][idx],
             self.full_data_array["part_dzval"][idx],
             self.full_data_array["part_dzerr"][idx],
-            #self.full_data_array["part_energy"][idx],
-            #self.full_data_array["part_massReco"][idx],
-            # target label -> Remove before training !!!
-            #self.full_data_array["part_isFromD"][idx]
         ], axis=1)
 
         part_features = part_features[:, :self.Nfeatures]  # Select only the first Nfeatures
 
-        # **Convert one-hot labels to three-class indices**
+        # Convert one-hot labels to three-class indices
         isFromD = self.full_data_array["part_isFromD"][idx]
         isFromDStar = self.full_data_array["part_isFromDStar"][idx]
 
-        # Convert to class index:
         # Class 2: D* meson
         # Class 1: D meson
         # Class 0: Everything else (background)
@@ -237,19 +240,19 @@ class ParticleJetDataset(Dataset):
 
         labels_particle[valid_mask & (isFromD > 0)] = 1
         labels_particle[valid_mask & (isFromDStar > 0) & (isFromD == 0)] = 2
-
         labels_particle[~valid_mask] = -1
 
         # Extract jet-level label
         label_jet = self.jet_isCJet[idx]
 
         return (
-            torch.tensor(part_features, dtype=torch.float32),
-            torch.tensor(labels_particle, dtype=torch.float32),
-            torch.tensor(label_jet, dtype=torch.float32),
-            torch.tensor(self.full_data_array["part_origin"][idx], dtype=torch.float32),
-            torch.tensor(self.full_data_array["part_versor"][idx], dtype=torch.float32),
-            torch.tensor(self.full_data_array["fitted_vtx"][idx], dtype=torch.float32),
+            torch.tensor(part_features, dtype=torch.float32),                               # [npad, F]
+            torch.tensor(labels_particle, dtype=torch.float32),                              # [npad]
+            torch.tensor(label_jet, dtype=torch.float32),                                    # scalar
+            torch.tensor(self.full_data_array["part_origin"][idx], dtype=torch.float32),     # [npad, 3]
+            torch.tensor(self.full_data_array["part_versor"][idx], dtype=torch.float32),     # [npad, 3]
+            torch.tensor(self.full_data_array["fitted_vtx"][idx], dtype=torch.float32),      # [3]
+            torch.tensor(self.full_data_array["best_chi2"][idx], dtype=torch.float32),       # scalar
         )
     
     def get_particles_loss_class_weights(self):
@@ -273,3 +276,45 @@ class ParticleJetDataset(Dataset):
 
     def get_npad(self):
         return self.npad
+
+if __name__ == "__main__":
+    from matplotlib import pyplot as plt
+    chi2s = []
+    labels_jets = []
+    root_files = ["/home/lucio/1_FW_Areas/gitrepos/github/PhD_repos/DStaranalysis-/data/output_Dijetcc_smeared_18164619.root"]
+    dataset = ParticleJetDataset(root_files=root_files, reduce_ds=10000)
+    print(f"Dataset length: {len(dataset)}")
+    for i in range(len(dataset)):
+        part_features, labels_particle, label_jet, origins, versors, fitted_vtxs, best_chi2s = dataset[i]
+        #print(f"Particle features shape: {part_features.shape}")
+        #print(f"Particle labels shape: {labels_particle.shape}")
+        #print(f"Jet label: {label_jet}")
+        #print(f"Origins shape: {origins.shape}")
+        #print(f"Versors shape: {versors.shape}")
+        #print(f"Fitted vertex shape: {fitted_vtxs.shape}")
+        #print(f"Best chi2: {best_chi2s}")
+
+        chi2s.append(best_chi2s.item())
+        labels_jets.append(label_jet.item())
+        #print("-" * 50)
+
+
+    plt.subplot(121)
+    plt.hist(chi2s, bins=50)
+    plt.semilogy()
+    plt.xlabel("Best chi2")
+    plt.ylabel("Frequency")
+    plt.title("All jets")
+
+    chi2s = np.array(chi2s)
+    labels_jets = np.array(labels_jets)
+    plt.subplot(122)
+    plt.hist(chi2s[labels_jets == 1], bins=50, alpha=0.5)
+    plt.semilogy()
+    plt.xlabel("Best chi2")
+    plt.ylabel("Frequency")
+    plt.title("D* jets")
+
+    plt.suptitle("Distribution of Best chi2 for True Vertex-Associated Tracks")
+    plt.tight_layout()
+    plt.savefig("best_chi2_distribution.png")

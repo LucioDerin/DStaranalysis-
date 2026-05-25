@@ -70,3 +70,39 @@ def fit(origins, versors, weights, fit_iter=100):
         minimizer.step()
 
     return loss, fitted_vertex
+
+def batch_vertex_loss(part_origin, part_versor, pred_particle, padding_mask,
+                      fitted_vtx_ref, best_chi2_ref, fit_iter=100):
+    """
+    ...
+    fitted_vtx_ref : torch.Tensor [B, 3]  — best-fit vertices from the dataloader
+    best_chi2_ref  : torch.Tensor [B]     — best chi2 values from the dataloader
+    """
+    B = part_origin.shape[0]
+    vtx_loss_total = torch.tensor(0.0, device=part_origin.device)
+    n_valid_jets = 0
+
+    for b in range(B):
+        valid = ~padding_mask[b]
+
+        if valid.sum() == 0:
+            continue
+
+        origins_b = part_origin[b][valid]
+        versors_b = part_versor[b][valid]
+        weights_b = torch.softmax(pred_particle[b][valid], dim=-1)[:, 1]
+
+        # chi2 at the reference vertex, with current predicted weights
+        current_chi2 = chi2(origins_b, versors_b, weights_b, fitted_vtx_ref[b])
+
+        # Delta w.r.t. the best achievable chi2 — removes the zero-weight trivial minimum
+        # clamp to avoid negative values from numerical noise
+        vtx_loss_b = torch.clamp(current_chi2 - best_chi2_ref[b], min=0.0)
+
+        vtx_loss_total = vtx_loss_total + vtx_loss_b
+        n_valid_jets += 1
+
+    if n_valid_jets == 0:
+        return torch.tensor(0.0, device=part_origin.device)
+
+    return vtx_loss_total / n_valid_jets

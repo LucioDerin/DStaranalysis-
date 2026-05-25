@@ -8,6 +8,8 @@ from model import ParticleJetClassifier  # Import model
 import sys
 import time as t
 
+from vertexing import batch_vertex_loss
+
 # Load Dataset and Dataloader
 Nfeature = 8
 root_file_prefix = "/mnt/project_mnt/atlas/atlas_gen_fs/lderin/DStaranalysis-/data/data_py_top/output_Dijetcc_smeared_181646"  # Change this to your actual ROOT file
@@ -19,6 +21,8 @@ npad = dataset.get_npad()
 val_dataset = ParticleJetDataset([f"{root_file_prefix}26.root"], reduce_ds=10000, Nfeatures=Nfeature, npad = npad)
 
 batch_size = 1024
+
+fit_iter = 100
 
 print(f"Dataset size: {len(dataset)}, using batch size: {batch_size}")
 dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
@@ -60,12 +64,14 @@ for epoch in range(num_epochs):
     jets_loss = 0.0
     model.train()
 
-    for (part_features, labels_particle, labels_jet) in dataloader:
+    for (part_features, labels_particle, labels_jet, part_origin, part_versor, best_chi2s) in dataloader:
 
         part_features = part_features.to(device)          # [B, N, F]
         labels_particle = labels_particle.to(device)      # [B, N]
         labels_jet = labels_jet.to(device).float()        # [B] or [B, 1]
-
+        part_origin = part_origin.to(device)
+        part_versor = part_versor.to(device)
+        best_chi2s = best_chi2s.to(device)
 
         optimizer.zero_grad()
 
@@ -95,21 +101,24 @@ for epoch in range(num_epochs):
             labels_jet.flatten()
         )
 
-        #print(f"Particle Loss: {particle_loss.item():.4f}, Jet Loss: {jet_loss.item():.4f}")
-        if particle_loss.isnan():
-            with open("faulty_batch.log", "a") as f:
-                f.write(f"Epoch {epoch+1}, Particle Loss is NaN. Batch details:\n")
-                for i in range(part_features.size(0)):
-                    f.write(f"Sample {i+1}:\n")
-                    f.write(f"  Features: {part_features[i].cpu().numpy()}\n")
-                    f.write(f"  Particle Labels: {labels_particle[i].cpu().numpy()}\n")
-                    f.write(f"  Jet Label: {labels_jet[i].item()}\n")
-            sys.exit(1)
+
+        vtx_loss = batch_vertex_loss(
+            part_origin,
+            part_versor,
+            pred_particle,          # [B, N, C] logits — still has grad_fn
+            padding_mask,
+            best_chi2s,            # [B] best chi2 with perfect track-vertex association
+            fit_iter=100
+        )
+        
+        # Combined loss — tune the 0.1 coefficient to your scale
+        batch_loss = 0.3 * particle_loss + jet_loss + 0.1 * vtx_loss
+
 
         # Combined loss
-        batch_loss = (0.3 * particle_loss + jet_loss)
         particles_loss += particle_loss.item()
         jets_loss += jet_loss.item()
+        vtx_loss += vtx_loss.item()
 
 
         batch_loss.backward()
@@ -121,7 +130,7 @@ for epoch in range(num_epochs):
     total_loss = total_loss / len(dataloader)
     particles_loss = particles_loss / len(dataloader)
     jets_loss = jets_loss / len(dataloader)
-
+    vtx_loss = vtx_loss / len(dataloader)
     scheduler.step()  # only if this is a per-batch scheduler
 
     # Validation loop
@@ -129,8 +138,9 @@ for epoch in range(num_epochs):
     val_loss = 0.0
     val_particles_loss = 0.0
     val_jets_loss = 0.0
+    val_vtx_loss = 0.0
     with torch.no_grad():
-        for (val_part_features, val_labels_particle, val_labels_jet) in val_dataloader:
+        for (val_part_features, val_labels_particle, val_labels_jet, val_part_origin, val_part_versor, val_best_chi2s) in val_dataloader:
             val_part_features = val_part_features.to(device)
             val_labels_particle = val_labels_particle.to(device)
             val_labels_jet = val_labels_jet.to(device).float()
@@ -153,13 +163,24 @@ for epoch in range(num_epochs):
                 val_labels_jet.flatten()
             )
 
-            batch_val_loss = 0.3 * val_particle_loss + val_jet_loss
+            val_vtx_loss = batch_vertex_loss(
+                val_part_origin,
+                val_part_versor,
+                val_pred_particle,
+                val_padding_mask,
+                val_best_chi2s,
+                fit_iter=100
+            )
+
+            batch_val_loss = 0.3 * val_particle_loss + val_jet_loss + 0.1 * val_vtx_loss
             val_particles_loss += val_particle_loss.item()
             val_jets_loss += val_jet_loss.item()
+            val_vtx_loss += val_vtx_loss.item()
             val_loss += batch_val_loss.item()
     val_loss = val_loss / len(val_dataloader)
     val_particles_loss = val_particles_loss / len(val_dataloader)
     val_jets_loss = val_jets_loss / len(val_dataloader)
+    val_vtx_loss = val_vtx_loss / len(val_dataloader)
 
     if val_loss < best_val_loss:
         best_val_loss = val_loss
@@ -172,7 +193,7 @@ for epoch in range(num_epochs):
     remaining_time = epoch_duration * (num_epochs - epoch - 1)
     print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {total_loss:.4f}, Val Loss: {val_loss:.4f}, LR: {lr:.6f}, ETA: {int(remaining_time//3600)}h{int((remaining_time%3600)//60)}m")
     with open("logs/train_no_vtx.log", "a") as f:
-        f.write(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {total_loss:.4f}, Train Particles Loss: {particles_loss:.4f}, Train Jets Loss: {jets_loss:.4f}, Val Loss: {val_loss:.4f}, Val Particles Loss: {val_particles_loss:.4f}, Val Jets Loss: {val_jets_loss:.4f}, LR: {lr:.6f}\n")
+        f.write(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {total_loss:.4f}, Train Particles Loss: {particles_loss:.4f}, Train Jets Loss: {jets_loss:.4f}, Val Loss: {val_loss:.4f}, Val Particles Loss: {val_particles_loss:.4f}, Val Jets Loss: {val_jets_loss:.4f}, Val Vertex Loss: {val_vtx_loss:.4f}, LR: {lr:.6f}\n")
 
 
 print("Training complete!")
