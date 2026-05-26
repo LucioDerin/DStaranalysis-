@@ -25,34 +25,8 @@ class ParticleJetClassifier(nn.Module):
             nn.ReLU(),
             nn.Linear(50, 20),
             nn.ReLU(),
-            nn.Linear(20, 3)
+            nn.Linear(20, 2)
         )
-
-        self.jet_fc = nn.Sequential(
-            nn.Linear(embed_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1),
-        )
-
-    def forward_old(self, x, padding_mask):
-        x = self.embedding(x)
-        x = self.transformer(x, src_key_padding_mask=padding_mask)
-
-        particle_out = self.particle_fc(x)
-
-        #jet_representation = torch.mean(x, dim=1)
-        mask = (~padding_mask).unsqueeze(-1)   # [B, N, 1]
-        x_masked = x * mask
-        valid_counts = mask.sum(dim=1)          # [B, 1]
-        jet_repr = torch.where(
-            valid_counts > 0,
-            x_masked.sum(dim=1) / valid_counts,
-            torch.zeros_like(x_masked.sum(dim=1))
-        )
-
-        jet_out = self.jet_fc(jet_repr)
-
-        return particle_out, jet_out
 
     def forward(self, x, padding_mask):
         # x: [B, N, F]
@@ -80,14 +54,5 @@ class ParticleJetClassifier(nn.Module):
         x = self.transformer(x, mask=attn_mask)
 
         particle_out = self.particle_fc(x)
-
-        # Masked mean pooling (safe now — shape preserved)
-        valid_mask = (~padding_mask).float()
-        x_weighted = x * valid_mask.unsqueeze(-1)
-        valid_counts = valid_mask.sum(dim=1, keepdim=True).clamp(min=1e-6)
-
-        jet_repr = x_weighted.sum(dim=1) / valid_counts
-
-        jet_out = self.jet_fc(jet_repr)
-
-        return particle_out, jet_out
+        
+        return particle_out
